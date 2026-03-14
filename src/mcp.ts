@@ -12,6 +12,7 @@ import {
   getMessagesAround,
   searchDbForContacts,
   searchMessages,
+  resolveJid,
 } from "./database.ts";
 
 import { sendWhatsAppMessage, type WhatsAppSocket } from "./whatsapp.ts";
@@ -138,7 +139,13 @@ export async function startMcpServer(
         `[MCP Tool] Executing list_messages for chat ${chat_jid}, limit=${limit}, page=${page}`,
       );
       try {
-        const messages = getMessages(chat_jid, limit, page);
+        // Resolve JID (handles LID↔phone mapping)
+        const jids = resolveJid(jidNormalizedUser(chat_jid));
+        let messages: DbMessage[] = [];
+        for (const jid of jids) {
+          messages = getMessages(jid, limit, page);
+          if (messages.length > 0) break;
+        }
         if (!messages.length && page === 0) {
           return {
             content: [
@@ -282,7 +289,12 @@ export async function startMcpServer(
         `[MCP Tool] Executing get_chat for ${chat_jid}, lastMsg=${include_last_message}`,
       );
       try {
-        const chat = getChat(chat_jid, include_last_message);
+        const jids = resolveJid(jidNormalizedUser(chat_jid));
+        let chat: DbChat | null = null;
+        for (const jid of jids) {
+          chat = getChat(jid, include_last_message);
+          if (chat) break;
+        }
         if (!chat) {
           return {
             isError: true,
@@ -412,6 +424,9 @@ export async function startMcpServer(
       let normalizedRecipient: string;
       try {
         normalizedRecipient = jidNormalizedUser(recipient);
+        // Resolve LID mapping if needed
+        const resolvedJids = resolveJid(normalizedRecipient);
+        normalizedRecipient = resolvedJids[0]; // Use primary resolved JID
         if (!normalizedRecipient.includes("@")) {
           throw new Error('JID must contain "@" symbol');
         }
@@ -506,7 +521,13 @@ export async function startMcpServer(
         `[MCP Tool] Executing search_messages ${searchScope}, query="${query}", limit=${limit}, page=${page}`,
       );
       try {
-        const messages = searchMessages(query, chat_jid, limit, page);
+        let resolvedChatJid = chat_jid;
+        if (chat_jid) {
+          const jids = resolveJid(jidNormalizedUser(chat_jid));
+          // Use first resolved JID for search (could expand to search all)
+          resolvedChatJid = jids[0];
+        }
+        const messages = searchMessages(query, resolvedChatJid, limit, page);
 
         if (!messages.length && page === 0) {
           return {
@@ -559,6 +580,8 @@ export async function startMcpServer(
     const schemaText = `
 TABLE chats (jid TEXT PK, name TEXT, last_message_time TIMESTAMP)
 TABLE messages (id TEXT, chat_jid TEXT, sender TEXT, content TEXT, timestamp TIMESTAMP, is_from_me BOOLEAN, PK(id, chat_jid), FK(chat_jid) REFERENCES chats(jid))
+TABLE contacts (jid TEXT PK, name TEXT, notify TEXT, phone_number TEXT)
+TABLE jid_mapping (phone_jid TEXT, lid_jid TEXT, updated_at TIMESTAMP, PK(phone_jid, lid_jid))
             `.trim();
     return {
       contents: [

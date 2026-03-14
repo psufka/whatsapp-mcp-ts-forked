@@ -18,6 +18,7 @@ import {
   storeMessage,
   storeChat,
   storeContact,
+  storeJidMapping,
   type Message as DbMessage,
 } from "./database.ts";
 
@@ -60,7 +61,20 @@ function parseMessageForDb(msg: WAMessage): DbMessage | null {
   }
 
   if (!content) {
-    return null;
+    // Capture unhandled message types instead of silently dropping them
+    const msgKeys = Object.keys(msg.message!);
+    const messageType = msgKeys.filter(k => k !== 'messageContextInfo')[0];
+    if (messageType) {
+      const silentTypes = new Set([
+        'protocolMessage',
+        'senderKeyDistributionMessage',
+        'fastRatchetKeySenderKeyDistributionMessage',
+        'messageContextInfo',
+      ]);
+      if (silentTypes.has(messageType)) return null;
+      content = `[${messageType}]`;
+    }
+    if (!content) return null;
   }
 
   // Use WhatsApp's original message timestamp (seconds since epoch)
@@ -111,7 +125,7 @@ export async function startWhatsAppConnection(
       keys: makeCacheableSignalKeyStore(state.keys, logger),
     },
     generateHighQualityLinkPreview: true,
-    shouldIgnoreJid: (jid) => isJidGroup(jid),
+    // shouldIgnoreJid: (jid) => isJidGroup(jid), // Disabled — need group messages
   });
 
   sock.ev.process(async (events) => {
@@ -169,6 +183,13 @@ export async function startWhatsAppConnection(
             phoneNumber: (c as any).phoneNumber ?? null,
           })
         );
+        // Capture LID mappings from contacts
+        contacts.forEach((c) => {
+          const contactAny = c as any;
+          if (contactAny.lid && c.id) {
+            storeJidMapping(c.id, contactAny.lid);
+          }
+        });
         logger.info(`Stored ${contacts.length} contacts from history sync.`);
       }
 
@@ -182,6 +203,18 @@ export async function startWhatsAppConnection(
             : undefined,
         })
       );
+
+      // Capture LID ↔ phone JID mappings from history sync
+      chats.forEach((chat) => {
+        const chatAny = chat as any;
+        if (chatAny.lidJid && chat.id) {
+          if (chat.id.endsWith('@s.whatsapp.net')) {
+            storeJidMapping(chat.id, chatAny.lidJid);
+          } else if (chat.id.endsWith('@lid')) {
+            storeJidMapping(chatAny.lidJid, chat.id);
+          }
+        }
+      });
 
       let storedCount = 0;
       messages.forEach((msg) => {
@@ -239,6 +272,53 @@ export async function startWhatsAppConnection(
             : undefined,
         });
       }
+    }
+
+    // Capture phone↔LID mappings from phone number share events
+    if (events["chats.phoneNumberShare"]) {
+      for (const share of events["chats.phoneNumberShare"]) {
+        const shareAny = share as any;
+        if (shareAny.lid && shareAny.jid) {
+          storeJidMapping(shareAny.jid, shareAny.lid);
+          logger.info({ phone: shareAny.jid, lid: shareAny.lid }, "Stored phone↔LID mapping from phoneNumberShare");
+        }
+      }
+    }
+
+    // Real-time contact sync
+    if (events["contacts.upsert"]) {
+      for (const contact of events["contacts.upsert"]) {
+        storeContact({
+          jid: contact.id,
+          name: contact.name ?? null,
+          notify: contact.notify ?? null,
+          phoneNumber: null,
+        });
+        // Capture LID mapping if available
+        const contactAny = contact as any;
+        if (contactAny.lid) {
+          storeJidMapping(contact.id, contactAny.lid);
+        }
+      }
+      logger.info({ count: events["contacts.upsert"].length }, "Stored contacts from upsert event");
+    }
+
+    if (events["contacts.update"]) {
+      for (const contact of events["contacts.update"]) {
+        if (contact.id) {
+          storeContact({
+            jid: contact.id,
+            name: contact.name ?? null,
+            notify: contact.notify ?? null,
+            phoneNumber: null,
+          });
+          const contactAny = contact as any;
+          if (contactAny.lid) {
+            storeJidMapping(contact.id, contactAny.lid);
+          }
+        }
+      }
+      logger.info({ count: events["contacts.update"].length }, "Updated contacts from update event");
     }
   });
 

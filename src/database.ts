@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import fs from "node:fs";
+import type P from "pino";
 
 const DATA_DIR = path.join(import.meta.dirname, "..", "data");
 const DB_PATH = path.join(DATA_DIR, "whatsapp.db");
@@ -25,6 +26,7 @@ export type Message = {
 };
 
 let dbInstance: DatabaseSync | null = null;
+let dbLogger: P.Logger | null = null;
 
 function getDb(): DatabaseSync {
   if (!dbInstance) {
@@ -36,7 +38,8 @@ function getDb(): DatabaseSync {
   return dbInstance;
 }
 
-export function initializeDatabase(): DatabaseSync {
+export function initializeDatabase(logger?: P.Logger): DatabaseSync {
+  if (logger) dbLogger = logger;
   const db = getDb();
 
   db.exec("PRAGMA journal_mode = WAL");
@@ -84,6 +87,20 @@ export function initializeDatabase(): DatabaseSync {
     `CREATE INDEX IF NOT EXISTS idx_chats_last_message_time ON chats (last_message_time);`,
   );
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS jid_mapping (
+      phone_jid TEXT NOT NULL,
+      lid_jid TEXT NOT NULL,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (phone_jid, lid_jid)
+    );
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_jid_mapping_lid ON jid_mapping (lid_jid);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_jid_mapping_phone ON jid_mapping (phone_jid);`);
+
+  // Migration: clean up corrupted "undefined" strings from storeChat bug
+  db.exec(`UPDATE chats SET last_message_time = NULL WHERE last_message_time IN ('undefined', 'null', '')`);
+
   return db;
 }
 
@@ -103,12 +120,10 @@ export function storeChat(chat: Partial<Chat> & { jid: string }): void {
       last_message_time:
         chat.last_message_time instanceof Date
           ? chat.last_message_time.toISOString()
-          : chat.last_message_time === null
-            ? null
-            : String(chat.last_message_time),
+          : null,
     });
   } catch (error) {
-    console.error("Error storing chat:", error);
+    (dbLogger?.error({ error }, "Error storing chat") ?? console.error("Error storing chat:", error));
   }
 }
 
@@ -141,7 +156,7 @@ export function storeMessage(message: Message): void {
       jid: message.chat_jid,
     });
   } catch (error) {
-    console.error("Error storing message:", error);
+    (dbLogger?.error({ error }, "Error storing message") ?? console.error("Error storing message:", error));
   }
 }
 
@@ -199,7 +214,7 @@ export function getMessages(
     const rows = stmt.all(chatJid, limit, offset) as any[];
     return rows.map(rowToMessage);
   } catch (error) {
-    console.error("Error getting messages:", error);
+    (dbLogger?.error({ error }, "Error getting messages") ?? console.error("Error getting messages:", error));
     return [];
   }
 }
@@ -252,7 +267,7 @@ export function getChats(
     const rows = stmt.all(...params) as any[];
     return rows.map(rowToChat);
   } catch (error) {
-    console.error("Error getting chats:", error);
+    (dbLogger?.error({ error }, "Error getting chats") ?? console.error("Error getting chats:", error));
     return [];
   }
 }
@@ -286,7 +301,7 @@ export function getChat(
     const row = stmt.get(jid) as any | undefined;
     return row ? rowToChat(row) : null;
   } catch (error) {
-    console.error("Error getting chat:", error);
+    (dbLogger?.error({ error }, "Error getting chat") ?? console.error("Error getting chat:", error));
     return null;
   }
 }
@@ -347,7 +362,7 @@ export function getMessagesAround(
 
     return result;
   } catch (error) {
-    console.error("Error getting messages around:", error);
+    (dbLogger?.error({ error }, "Error getting messages around") ?? console.error("Error getting messages around:", error));
     return result;
   }
 }
@@ -380,7 +395,7 @@ export function searchDbForContacts(
       name: r.display_name,
     }));
   } catch (error) {
-    console.error("Error searching contacts:", error);
+    (dbLogger?.error({ error }, "Error searching contacts") ?? console.error("Error searching contacts:", error));
     return [];
   }
 }
@@ -419,7 +434,7 @@ export function searchMessages(
     const rows = stmt.all(...params) as any[];
     return rows.map(rowToMessage);
   } catch (error) {
-    console.error("Error searching messages:", error);
+    (dbLogger?.error({ error }, "Error searching messages") ?? console.error("Error searching messages:", error));
     return [];
   }
 }
@@ -427,11 +442,12 @@ export function searchMessages(
 export function closeDatabase(): void {
   if (dbInstance) {
     try {
+      dbInstance.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       dbInstance.close();
       dbInstance = null;
-      console.log("Database connection closed.");
+      (dbLogger?.info("Database WAL checkpointed and connection closed.") ?? console.log("Database WAL checkpointed and connection closed."));
     } catch (error) {
-      console.error("Error closing database:", error);
+      (dbLogger?.error({ error }, "Error closing database") ?? console.error("Error closing database:", error));
     }
   }
 }
@@ -460,6 +476,48 @@ export function storeContact(contact: {
       phone_number: contact.phoneNumber ?? null,
     });
   } catch (error) {
-    console.error("Error storing contact:", error);
+    (dbLogger?.error({ error }, "Error storing contact") ?? console.error("Error storing contact:", error));
+  }
+}
+
+export function storeJidMapping(phoneJid: string, lidJid: string): void {
+  const db = getDb();
+  try {
+    const stmt = db.prepare(`
+      INSERT OR REPLACE INTO jid_mapping (phone_jid, lid_jid, updated_at)
+      VALUES (?, ?, datetime('now'))
+    `);
+    stmt.run(phoneJid, lidJid);
+  } catch (error) {
+    (dbLogger?.error({ error, phoneJid, lidJid }, "Error storing JID mapping") ?? console.error("Error storing JID mapping:", error));
+  }
+}
+
+export function resolveJid(inputJid: string): string[] {
+  const db = getDb();
+  try {
+    // Check if input is a phone JID — look for associated LIDs
+    const phoneLookup = db.prepare(
+      `SELECT lid_jid FROM jid_mapping WHERE phone_jid = ?`
+    );
+    const phoneResults = phoneLookup.all(inputJid) as { lid_jid: string }[];
+    if (phoneResults.length > 0) {
+      return [inputJid, ...phoneResults.map(r => r.lid_jid)];
+    }
+
+    // Check if input is a LID — look for associated phone JIDs
+    const lidLookup = db.prepare(
+      `SELECT phone_jid FROM jid_mapping WHERE lid_jid = ?`
+    );
+    const lidResults = lidLookup.all(inputJid) as { phone_jid: string }[];
+    if (lidResults.length > 0) {
+      return [inputJid, ...lidResults.map(r => r.phone_jid)];
+    }
+
+    // No mapping found — return input as-is
+    return [inputJid];
+  } catch (error) {
+    (dbLogger?.error({ error, inputJid }, "Error resolving JID") ?? console.error("Error resolving JID:", error));
+    return [inputJid];
   }
 }

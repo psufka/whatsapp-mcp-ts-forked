@@ -1,5 +1,5 @@
 import { pino } from "pino";
-import { initializeDatabase } from "./database.ts";
+import { initializeDatabase, closeDatabase } from "./database.ts";
 import { startWhatsAppConnection, type WhatsAppSocket } from "./whatsapp.ts";
 import { startMcpServer } from "./mcp.ts";
 
@@ -27,7 +27,7 @@ async function main() {
 
   try {
     mcpLogger.info("Initializing database...");
-    initializeDatabase();
+    initializeDatabase(waLogger);
     mcpLogger.info("Database initialized successfully.");
 
     mcpLogger.info("Attempting to connect to WhatsApp...");
@@ -56,6 +56,8 @@ async function main() {
 
 async function shutdown(signal: string) {
   mcpLogger.info(`Received ${signal}. Shutting down gracefully...`);
+
+  closeDatabase();
 
   waLogger.flush();
   mcpLogger.flush();
