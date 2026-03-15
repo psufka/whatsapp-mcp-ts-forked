@@ -26,6 +26,9 @@ const AUTH_DIR = path.join(import.meta.dirname, "..", "auth_info");
 
 export type WhatsAppSocket = ReturnType<typeof makeWASocket>;
 
+// Authenticated user's JIDs (phone + LID) — populated on connection open
+let myJids: Set<string> = new Set();
+
 function parseMessageForDb(msg: WAMessage): DbMessage | null {
   if (!msg.message || !msg.key || !msg.key.remoteJid) {
     return null;
@@ -104,7 +107,7 @@ function parseMessageForDb(msg: WAMessage): DbMessage | null {
     sender: senderJid ? jidNormalizedUser(senderJid) : null,
     content: content,
     timestamp: timestamp,
-    is_from_me: msg.key.fromMe ?? false,
+    is_from_me: (msg.key.fromMe ?? false) || (senderJid ? myJids.has(jidNormalizedUser(senderJid)) : false),
   };
 }
 
@@ -161,7 +164,13 @@ export async function startWhatsAppConnection(
         }
       } else if (connection === "open") {
         logger.info(`Connection opened. WA user: ${sock.user?.name}`);
-        // console.log("Logged as", sock.user?.name);
+        if (sock.user) {
+          myJids.add(jidNormalizedUser(sock.user.id));
+          if ((sock.user as any).lid) {
+            myJids.add(jidNormalizedUser((sock.user as any).lid));
+          }
+          logger.info({ myJids: [...myJids] }, "Captured authenticated user JIDs");
+        }
       }
     }
 
