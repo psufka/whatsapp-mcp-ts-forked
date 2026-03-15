@@ -60,6 +60,9 @@ SQLite WAL wasn't checkpointed on shutdown, causing data loss when the process w
 ### 9. Updated `db_schema` resource
 The MCP schema resource now includes all tables (`chats`, `messages`, `contacts`, `jid_mapping`).
 
+### 10. Own messages recognized via LID matching
+Messages sent from the phone app in group chats showed `is_from_me: false` because the sender LID didn't match the authenticated user's phone JID. Now captures the user's phone JID + LID on connection open and checks sender against both when determining `is_from_me`.
+
 ## Database Schema
 
 ```
