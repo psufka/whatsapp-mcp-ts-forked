@@ -63,6 +63,19 @@ The MCP schema resource now includes all tables (`chats`, `messages`, `contacts`
 ### 10. Own messages recognized via LID matching
 Messages sent from the phone app in group chats showed `is_from_me: false` because the sender LID didn't match the authenticated user's phone JID. Now captures the user's phone JID + LID on connection open and checks sender against both when determining `is_from_me`.
 
+### 11. Security: QR code data no longer sent to third-party services
+The upstream code sends WhatsApp pairing QR data to `quickchart.io` as a GET parameter (`open(\`https://quickchart.io/qr?text=...\`)`). This leaks cryptographic handshake material (Noise protocol keys, identity keys) to a third-party server's access logs during every pairing attempt.
+
+**Fix:** Replaced with `qrcode-terminal` — QR codes render locally in the terminal with zero network calls. The `open` package (which launched browsers) has been removed entirely.
+
+### 12. Security: credentials and data stored outside cloud-synced directories
+Auth credentials (`auth_info/`) and message database (`data/`) default to `~/.local/share/whatsapp-mcp-ts/` instead of relative to the repo directory. This prevents accidental sync of WhatsApp session keys and plaintext messages to Dropbox, iCloud, or other cloud storage.
+
+Configurable via environment variables: `WHATSAPP_AUTH_DIR`, `WHATSAPP_DATA_DIR`.
+
+### 13. Security: log files moved and sensitive fields redacted
+Log files now write to `~/.local/share/whatsapp-mcp-ts/logs/` (not the working directory). Default log level changed from `info` to `warn`. QR code data fields are redacted via pino's `redact` option even at verbose log levels.
+
 ## Database Schema
 
 ```

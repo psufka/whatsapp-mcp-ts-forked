@@ -11,7 +11,8 @@ import {
 } from "@whiskeysockets/baileys";
 import P from "pino";
 import path from "node:path";
-import open from "open";
+import os from "node:os";
+import qrcode from "qrcode-terminal";
 
 import {
   initializeDatabase,
@@ -22,7 +23,7 @@ import {
   type Message as DbMessage,
 } from "./database.ts";
 
-const AUTH_DIR = path.join(import.meta.dirname, "..", "auth_info");
+const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR || path.join(os.homedir(), ".local", "share", "whatsapp-mcp-ts", "auth_info");
 
 export type WhatsAppSocket = ReturnType<typeof makeWASocket>;
 
@@ -137,12 +138,8 @@ export async function startWhatsAppConnection(
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        logger.info(
-          { qrCodeData: qr },
-          "QR Code Received. Copy the qrCodeData string and use a QR code generator (e.g., online website) to display and scan it with your WhatsApp app."
-        );
-        // for now we roughly open the QR code in a browser
-        await open(`https://quickchart.io/qr?text=${encodeURIComponent(qr)}`);
+        logger.info("QR Code received — rendering locally (no external services).");
+        qrcode.generate(qr, { small: true });
       }
 
       if (connection === "close") {

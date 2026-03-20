@@ -1,23 +1,29 @@
 import { pino } from "pino";
+import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
 import { initializeDatabase, closeDatabase } from "./database.ts";
 import { startWhatsAppConnection, type WhatsAppSocket } from "./whatsapp.ts";
 import { startMcpServer } from "./mcp.ts";
 
-const dataDir = process.env.WHATSAPP_MCP_DATA_DIR || '.';
+const logDir = process.env.WHATSAPP_MCP_DATA_DIR || path.join(os.homedir(), ".local", "share", "whatsapp-mcp-ts", "logs");
+if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+
 const waLogger = pino(
   {
-    level: process.env.LOG_LEVEL || "info",
+    level: process.env.LOG_LEVEL || "warn",
     timestamp: pino.stdTimeFunctions.isoTime,
+    redact: ['qrCodeData', 'qr'],
   },
-  pino.destination(`${dataDir}/wa-logs.txt`)
+  pino.destination(path.join(logDir, "wa-logs.txt"))
 );
 
 const mcpLogger = pino(
   {
-    level: process.env.LOG_LEVEL || "info",
+    level: process.env.LOG_LEVEL || "warn",
     timestamp: pino.stdTimeFunctions.isoTime,
   },
-  pino.destination(`${dataDir}/mcp-logs.txt`)
+  pino.destination(path.join(logDir, "mcp-logs.txt"))
 );
 
 async function main() {

@@ -1,9 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
+import os from "node:os";
 import fs from "node:fs";
 import type P from "pino";
 
-const DATA_DIR = path.join(import.meta.dirname, "..", "data");
+const DATA_DIR = process.env.WHATSAPP_DATA_DIR || path.join(os.homedir(), ".local", "share", "whatsapp-mcp-ts", "data");
 const DB_PATH = path.join(DATA_DIR, "whatsapp.db");
 
 export interface Chat {
